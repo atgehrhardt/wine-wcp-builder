@@ -9,7 +9,7 @@ set -euo pipefail
 
 BUILD_ARCH="${1:?Usage: pack-wcp.sh <x86_64|aarch64>}"
 
-PROTON_VERSION="${PROTON_VERSION:-10.0-4}"
+WINE_VERSION="${WINE_VERSION:-11.0}"
 OUTPUT_DIR="${GITHUB_WORKSPACE:-$(pwd)}/output"
 
 # Determine arch-specific paths
@@ -52,9 +52,9 @@ cp "${PREFIX_PACK}" ./prefixPack.txz
 cat > profile.json <<EOF
 {
   "type": "Wine",
-  "versionName": "${PROTON_VERSION}-${ARCH_NAME}",
+  "versionName": "${WINE_VERSION}-${ARCH_NAME}",
   "versionCode": 0,
-  "description": "Wine ${PROTON_VERSION} ${ARCH_NAME} - Windows compatibility layer for GameNative",
+  "description": "Wine ${WINE_VERSION} ${ARCH_NAME} - Windows compatibility layer for GameNative",
   "files": [],
   "wine": {
     "binPath": "bin",
@@ -68,12 +68,12 @@ echo "==> profile.json:"
 cat profile.json
 
 # ── Create Wine WCP (xz-compressed tar) for GameNative ─────────────────
-WCP_NAME="wine-${PROTON_VERSION}-${ARCH_NAME}.wcp"
+WCP_NAME="wine-${WINE_VERSION}-${ARCH_NAME}.wcp"
 echo "==> Creating ${WCP_NAME}..."
 tar cJf "${OUTPUT_DIR}/${WCP_NAME}" bin lib share prefixPack.txz profile.json
 
 # ── Create Wine WCP.xz for Winlator CMOD / Ludashi ─────────────────────
-WCP_XZ_NAME="wine-${PROTON_VERSION}-${ARCH_NAME}.wcp.xz"
+WCP_XZ_NAME="wine-${WINE_VERSION}-${ARCH_NAME}.wcp.xz"
 echo "==> Creating ${WCP_XZ_NAME}..."
 # Same contents, same format, just different filename convention
 cp "${OUTPUT_DIR}/${WCP_NAME}" "${OUTPUT_DIR}/${WCP_XZ_NAME}"

@@ -1,18 +1,24 @@
 # wine-wcp-builder
 
-Automated GitHub Actions pipeline that builds [Wine](https://www.winehq.org/)
+Automated GitHub Actions pipeline that builds upstream [Wine](https://www.winehq.org/)
 as a **WCP** (Winlator Content Package) compatible with
 [GameNative](https://github.com/utkarshdalal/GameNative) and
 [Winlator Bionic](https://github.com/brunodev85/winlator).
 
 [![Build x86_64](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml/badge.svg)](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml)
 [![Build aarch64](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml/badge.svg)](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml)
+
 ## How it works
 
-This repo is a CI/CD wrapper around [GameNative/proton-wine](https://github.com/GameNative/proton-wine),
-which is a working Proton Wine fork with Android/Bionic patches. The build produces
-**both** Unix ELF libraries (for the Android host) and Windows PE DLLs, which is
-required for Wine to function on Android.
+This pipeline cross-compiles **upstream Wine** (from [wine-mirror/wine](https://github.com/wine-mirror/wine))
+for Android/Bionic, applying Android-specific patches from
+[GameNative/proton-wine](https://github.com/GameNative/proton-wine) to enable
+functionality on Android devices. The build produces **both** Unix ELF libraries
+(for the Android host) and Windows PE DLLs, which is required for Wine to
+function on Android.
+
+The latest stable Wine version is auto-detected on each run (e.g., Wine 11.0),
+or you can specify any tag manually.
 
 ## What is a WCP?
 
@@ -50,13 +56,32 @@ prefixPack.txz      ← Pre-built Wine prefix (registry, system initialization)
 | bylaws/llvm-mingw | 20250920 | PE DLL cross-compilation (ARM64EC support) |
 | Termux sysroot | build-20260218 | Pre-built Android libraries (freetype, vulkan, X11, etc.) |
 
+## Android patches
+
+Android patches are sourced from [GameNative/proton-wine](https://github.com/GameNative/proton-wine)
+and applied on a best-effort basis. These patches enable:
+
+- Android networking support
+- MIDI support
+- Shared memory (esync/fsync) for Android
+- X11 driver modifications for Android displays
+- Address space and preloader fixes
+- PulseAudio, SDL, GStreamer integration
+- ARM64EC / FEX support (aarch64 only)
+- Clipboard, browser, and shortcut handling
+
+Patches that fail to apply cleanly against the target Wine version are skipped
+with warnings — the build continues without them.
+
 ## Automated builds
 
-The workflow runs daily at 06:00 UTC. When a new commit is detected on
-GameNative/proton-wine, a build is triggered and a GitHub Release is
-created with WCP files for both architectures.
+The workflow runs daily at 06:00 UTC. It auto-detects the latest stable
+upstream Wine release and builds if no matching release exists yet.
 
 Manual trigger: **Actions > Build Wine WCP > Run workflow**
+
+You can optionally specify a Wine tag (e.g., `wine-11.0`, `wine-10.22`) to
+build a specific version.
 
 ## Directory structure
 
@@ -66,18 +91,17 @@ Manual trigger: **Actions > Build Wine WCP > Run workflow**
 
 scripts/
   setup-deps.sh       ← Ubuntu 24.04 build dependencies
+  build-wine.sh       ← Cross-compilation (configure, patch, build, install)
   pack-wcp.sh         ← WCP packaging (profile.json + tar xz)
 ```
 
-The Wine source, build scripts, and Android patches all come from
-[GameNative/proton-wine](https://github.com/GameNative/proton-wine)
-and are cloned at build time.
+Upstream Wine source is cloned at build time. Android patches and support files
+(sysvshm, etc.) are pulled from GameNative/proton-wine.
 
 ## Credits
 
 - [Wine Project](https://www.winehq.org/) – Windows compatibility layer
-- [GameNative/proton-wine](https://github.com/GameNative/proton-wine) – Proton Wine for Android
+- [GameNative/proton-wine](https://github.com/GameNative/proton-wine) – Android/Bionic patches
 - [GameNative](https://github.com/utkarshdalal/GameNative) – Wine on Android via Winlator Bionic
 - [Arihany/WinlatorWCPHub](https://github.com/Arihany/WinlatorWCPHub) – WCP format reference
 - [bylaws/llvm-mingw](https://github.com/bylaws/llvm-mingw) – LLVM-MinGW with ARM64EC support
-- [ValveSoftware/wine](https://github.com/ValveSoftware/wine) – Proton Wine upstream
