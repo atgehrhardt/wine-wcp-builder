@@ -5,6 +5,8 @@ as a **WCP** (Winlator Content Package) compatible with
 [GameNative](https://github.com/utkarshdalal/GameNative) and
 [Winlator Bionic](https://github.com/brunodev85/winlator).
 
+[![Build x86_64](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml/badge.svg)](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml)
+[![Build aarch64](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml/badge.svg)](https://github.com/atgehrhardt/wine-wcp-builder/actions/workflows/build-wine.yml)
 ## How it works
 
 This repo is a CI/CD wrapper around [GameNative/proton-wine](https://github.com/GameNative/proton-wine),
