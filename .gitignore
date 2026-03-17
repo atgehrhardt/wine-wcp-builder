@@ -1,9 +1,12 @@
 build/
 output/
+wine-src/
 *.wcp
+*.wcp.xz
 *.tar.xz
 *.tar.gz
 *.tar.zst
+*.txz
 *.log
 .DS_Store
 __pycache__/

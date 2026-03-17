@@ -1,57 +1,33 @@
 #!/usr/bin/env bash
-# setup-deps.sh – Install build dependencies on Ubuntu 22.04
+# setup-deps.sh – Install build dependencies on Ubuntu 24.04
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+dpkg --add-architecture i386
 apt-get update -qq
 
-# Core build tools + cross-compilation + Wine build requirements + utilities
 apt-get install -y --no-install-recommends \
   build-essential \
+  git \
+  wget \
+  curl \
+  unzip \
+  flex \
+  bison \
+  gettext \
   autoconf \
   automake \
   libtool \
   pkg-config \
-  bison \
-  flex \
-  gettext \
-  gcc-mingw-w64-x86-64 \
-  gcc-mingw-w64-i686 \
-  binutils-mingw-w64-x86-64 \
-  binutils-mingw-w64-i686 \
-  libgnutls28-dev \
-  libfreetype-dev \
-  libfontconfig-dev \
-  libxslt1-dev \
-  libxml2-dev \
+  mingw-w64 \
+  gcc-multilib \
+  g++-multilib \
+  libfreetype6-dev \
+  libfreetype6-dev:i386 \
   libpng-dev \
-  libjpeg-dev \
-  libtiff-dev \
-  libdbus-1-dev \
-  libgstreamer1.0-dev \
-  libgstreamer-plugins-base1.0-dev \
-  libvulkan-dev \
-  libsdl2-dev \
-  libmpg123-dev \
-  libopenal-dev \
-  libcups2-dev \
-  libsane-dev \
-  libv4l-dev \
-  libkrb5-dev \
-  libldap-dev \
-  libpcap-dev \
-  ocl-icd-opencl-dev \
-  libpulse-dev \
-  jq \
-  curl \
-  wget \
-  xz-utils \
-  zstd \
-  git \
-  python3 \
-  python3-pip \
-  glslang-tools \
-  spirv-tools
+  libpng-dev:i386 \
+  zlib1g-dev \
+  zlib1g-dev:i386
 
 echo "Dependencies installed."

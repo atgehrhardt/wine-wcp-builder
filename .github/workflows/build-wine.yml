@@ -5,217 +5,261 @@ on:
     - cron: '0 6 * * *'   # Check daily at 6 AM UTC
   workflow_dispatch:
     inputs:
-      wine_source:
-        description: 'Source: "upstream" (latest stable wine.org) or "winlator" (brunodev85 fork)'
-        required: false
-        default: 'upstream'
-        type: choice
-        options:
-          - upstream
-          - winlator
       wine_version:
-        description: 'Specific version to build (e.g., "10.0"). Leave blank for latest.'
+        description: 'Proton Wine version tag/branch (e.g., "proton_10.0"). Leave blank for latest.'
         required: false
         default: ''
+      arch:
+        description: 'Architecture to build'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - x86_64
+          - aarch64
 
 permissions:
-  contents: write   # needed to create releases
+  contents: write
 
 env:
-  # Winlator-compatible Wine fork
-  WINLATOR_WINE_REPO: brunodev85/wine-9.2-custom
-  # LLVM-MinGW version (same pin as WinlatorWCPHub to avoid toolchain drift)
-  LLVM_MINGW_VERSION: '20251104'
+  # GameNative's working Proton Wine fork
+  WINE_REPO: GameNative/proton-wine
+  WINE_BRANCH: proton_10.0
+  # Toolchain versions (pinned to match GameNative)
+  NDK_VERSION: '27.3.13750724'
+  LLVM_MINGW_VERSION: '20250920'
+  LLVM_MINGW_REPO: bylaws/llvm-mingw
+  # Termux sysroot (provides Android libraries)
+  TERMUXFS_REPO: GameNative/termux-on-gha
+  TERMUXFS_TAG: build-20260218
+  # Wine prefix files
+  PREFIX_REPO: GameNative/bionic-prefix-files
+  # WCP version label
+  PROTON_VERSION: '10.0-4'
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # 1. Determine which version to build and whether we already have it
+  # 1. Check if we need to build
   # ─────────────────────────────────────────────────────────────────────────
-  check-version:
-    runs-on: ubuntu-22.04
+  check:
+    runs-on: ubuntu-24.04
     outputs:
-      version:      ${{ steps.resolve.outputs.version }}
-      source:       ${{ steps.resolve.outputs.source }}
-      commit_sha:   ${{ steps.resolve.outputs.commit_sha }}
-      should_build: ${{ steps.resolve.outputs.should_build }}
-      release_tag:  ${{ steps.resolve.outputs.release_tag }}
+      should_build: ${{ steps.check.outputs.should_build }}
+      wine_sha: ${{ steps.check.outputs.wine_sha }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve version to build
-        id: resolve
+      - name: Check for new commits
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WINE_SOURCE: ${{ github.event.inputs.wine_source || 'upstream' }}
-          WINE_VERSION_INPUT: ${{ github.event.inputs.wine_version || '' }}
         run: |
           set -euo pipefail
 
-          SOURCE="${WINE_SOURCE}"
-          echo "source=${SOURCE}" >> "$GITHUB_OUTPUT"
+          BRANCH="${{ github.event.inputs.wine_version || env.WINE_BRANCH }}"
+          WINE_SHA=$(gh api "repos/${WINE_REPO}/commits/${BRANCH}" --jq '.sha[:8]')
+          DATE=$(date +%Y%m%d)
+          RELEASE_TAG="build-${DATE}-${WINE_SHA}"
 
-          if [ "${SOURCE}" = "winlator" ]; then
-            # ── Winlator fork ──────────────────────────────────────────────
-            LATEST_TAG=$(curl -fsSL \
-              "https://api.github.com/repos/${WINLATOR_WINE_REPO}/tags" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              | jq -r 'first(.[] | .name)' )
-
-            if [ -z "${WINE_VERSION_INPUT}" ]; then
-              VERSION="${LATEST_TAG}"
-            else
-              VERSION="${WINE_VERSION_INPUT}"
-            fi
-
-            COMMIT_SHA=$(curl -fsSL \
-              "https://api.github.com/repos/${WINLATOR_WINE_REPO}/commits/${VERSION}" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              | jq -r '.sha[:8]' 2>/dev/null || echo "unknown")
-
-            RELEASE_TAG="wine-winlator-${VERSION}"
-          else
-            # ── Upstream Wine stable ───────────────────────────────────────
-            # Stable tags: wine-X.0, wine-X.0.Y (point releases)
-            if [ -z "${WINE_VERSION_INPUT}" ]; then
-              VERSION=$(curl -fsSL \
-                "https://api.github.com/repos/wine-mirror/wine/tags?per_page=100" \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                | jq -r '[.[] | .name
-                          | select(test("^wine-[0-9]+\\.0(\\.[0-9]+)?$"))]
-                         | first
-                         | ltrimstr("wine-")')
-            else
-              VERSION="${WINE_VERSION_INPUT}"
-            fi
-
-            COMMIT_SHA="stable"
-            RELEASE_TAG="wine-${VERSION}"
-          fi
-
-          echo "version=${VERSION}"       >> "$GITHUB_OUTPUT"
-          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "wine_sha=${WINE_SHA}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
-          # Skip if the release already exists (for scheduled runs)
-          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" \
-               > /dev/null 2>&1; then
+          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "Release ${RELEASE_TAG} already exists – skipping build."
+            echo "Release ${RELEASE_TAG} already exists – skipping."
           else
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "Will build release: ${RELEASE_TAG}"
+            echo "Will build: ${RELEASE_TAG}"
           fi
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 2. Build Wine PE DLLs and package as WCP
+  # 2. Build Wine for each architecture
   # ─────────────────────────────────────────────────────────────────────────
   build:
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180   # Wine builds can take 2-3 h on GitHub runners
+    needs: check
+    if: needs.check.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        arch: ${{ github.event.inputs.arch == 'x86_64' && fromJson('["x86_64"]') || github.event.inputs.arch == 'aarch64' && fromJson('["aarch64"]') || fromJson('["x86_64", "aarch64"]') }}
+      fail-fast: false
 
     env:
-      WINE_VERSION:  ${{ needs.check-version.outputs.version }}
-      WINE_SOURCE:   ${{ needs.check-version.outputs.source }}
-      COMMIT_SHA:    ${{ needs.check-version.outputs.commit_sha }}
-      RELEASE_TAG:   ${{ needs.check-version.outputs.release_tag }}
+      WINE_SHA: ${{ needs.check.outputs.wine_sha }}
+      RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # ── Restore build cache (native tools + downloaded tarballs) ──────────
-      - name: Restore cache
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Install build dependencies
+        run: sudo bash scripts/setup-deps.sh
+
+      # ── Clone Wine source ──────────────────────────────────────────────────
+      - name: Clone Proton Wine
+        run: |
+          BRANCH="${{ github.event.inputs.wine_version || env.WINE_BRANCH }}"
+          git clone --depth=1 --branch "${BRANCH}" \
+            "https://github.com/${WINE_REPO}.git" wine-src
+
+      # ── Termux sysroot ─────────────────────────────────────────────────────
+      - name: Download termuxfs
+        run: |
+          mkdir -p "$HOME/termuxfs/${{ matrix.arch }}"
+          cd "$HOME/termuxfs/${{ matrix.arch }}"
+          wget -q "https://github.com/${TERMUXFS_REPO}/releases/download/${TERMUXFS_TAG}/termuxfs-${{ matrix.arch }}.tar"
+          tar -xf "termuxfs-${{ matrix.arch }}.tar"
+
+      # ── Android NDK ─────────────────────────────────────────────────────────
+      - name: Cache Android NDK
+        id: cache-ndk
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/wine-build
-            /opt/llvm-mingw
-          key: wine-build-${{ runner.os }}-${{ env.WINE_SOURCE }}-${{ env.WINE_VERSION }}-${{ env.LLVM_MINGW_VERSION }}
-          restore-keys: |
-            wine-build-${{ runner.os }}-${{ env.WINE_SOURCE }}-${{ env.WINE_VERSION }}-
+          path: ~/Android/Sdk/ndk/${{ env.NDK_VERSION }}
+          key: android-ndk-r27d
 
-      # ── System dependencies ────────────────────────────────────────────────
-      - name: Install build dependencies
+      - name: Setup Android NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
-          sudo bash scripts/setup-deps.sh
+          mkdir -p "$HOME/Android/Sdk/ndk"
+          cd "$HOME/Android/Sdk/ndk"
+          wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip -q android-ndk-r27d-linux.zip
+          mv android-ndk-r27d "${{ env.NDK_VERSION }}"
 
-      # ── LLVM-MinGW toolchain ───────────────────────────────────────────────
-      - name: Setup LLVM-MinGW
+      # ── LLVM MinGW (bylaws fork) ───────────────────────────────────────────
+      - name: Cache LLVM MinGW
+        id: cache-llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchains/llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-ucrt-ubuntu-22.04-x86_64
+          key: bylaws-llvm-mingw-${{ env.LLVM_MINGW_VERSION }}
+
+      - name: Setup LLVM MinGW
+        if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
         run: |
-          bash scripts/setup-llvm-mingw.sh "${LLVM_MINGW_VERSION}"
+          mkdir -p "$HOME/toolchains"
+          cd "$HOME/toolchains"
+          wget -q "https://github.com/${LLVM_MINGW_REPO}/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"
+          tar -xf "llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"
 
-      # ── Download Wine source ────────────────────────────────────────────────
-      - name: Download Wine source
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ── Build Wine ─────────────────────────────────────────────────────────
+      - name: Run autogen
+        working-directory: wine-src
+        run: bash autogen.sh
+
+      - name: Cache wine-tools
+        id: cache-wine-tools
+        uses: actions/cache@v4
+        with:
+          path: wine-src/wine-tools
+          key: wine-tools-${{ hashFiles('wine-src/configure.ac', 'wine-src/configure') }}
+
+      - name: Build wine-tools
+        if: steps.cache-wine-tools.outputs.cache-hit != 'true'
+        working-directory: wine-src
         run: |
-          bash scripts/download-wine.sh "${WINE_SOURCE}" "${WINE_VERSION}"
+          mkdir -p wine-tools && cd wine-tools
+          ../configure --without-x --without-gstreamer --without-vulkan --without-wayland
+          make -j$(nproc) __tooldeps__ nls/all
 
-      # ── Apply patches ───────────────────────────────────────────────────────
-      - name: Apply patches
+      - name: Build sysvshm library
+        if: matrix.arch == 'aarch64'
+        working-directory: wine-src
         run: |
-          bash scripts/apply-patches.sh "${WINE_SOURCE}" "${WINE_VERSION}"
+          bash build-scripts/build-step-arm64ec.sh --build-sysvshm
 
-      # ── Build native Wine tools (wrc, widl, winebuild – run on x86_64) ─────
-      - name: Build native Wine tools
+      - name: Configure Wine
+        working-directory: wine-src
         run: |
-          bash scripts/build-wine-tools.sh
+          bash build-scripts/build-step-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.sh --configure
 
-      # ── Cross-compile Wine PE DLLs with MinGW ──────────────────────────────
-      - name: Build Wine PE DLLs (64-bit)
+      - name: Build Wine
+        working-directory: wine-src
         run: |
-          bash scripts/build-wine-pe.sh x86_64
+          bash build-scripts/build-step-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.sh --build
 
-      - name: Build Wine PE DLLs (32-bit / WoW64)
+      - name: Install Wine
+        working-directory: wine-src
         run: |
-          bash scripts/build-wine-pe.sh i686
+          bash build-scripts/build-step-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.sh --install
 
-      # ── Package as WCP ──────────────────────────────────────────────────────
+      # ── Package WCP ─────────────────────────────────────────────────────────
+      - name: Download prefixPack
+        run: |
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            wget -q "https://github.com/${PREFIX_REPO}/raw/main/prefixPack-x86_64.txz" \
+              -O prefixPack.txz
+          else
+            wget -q "https://github.com/${PREFIX_REPO}/raw/main/prefixPack-arm64ec.txz" \
+              -O prefixPack.txz
+          fi
+
       - name: Package WCP
         run: |
-          bash scripts/pack-wcp.sh "${WINE_VERSION}" "${WINE_SOURCE}" "${COMMIT_SHA}"
+          bash scripts/pack-wcp.sh "${{ matrix.arch }}"
 
-      # ── Upload WCP artifact for inspection before release ──────────────────
-      - name: Upload WCP artifact
+      - name: Upload WCP artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wine-wcp-${{ env.RELEASE_TAG }}
-          path: output/*.wcp
-          retention-days: 7
+          name: wcp-${{ matrix.arch }}
+          path: output/*.wcp*
+          retention-days: 30
 
-      # ── Publish GitHub Release ────────────────────────────────────────────
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. Create GitHub Release
+  # ─────────────────────────────────────────────────────────────────────────
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
         run: |
-          WCP_FILE=$(ls output/*.wcp | head -1)
-          WCP_NAME=$(basename "${WCP_FILE}")
-          SHA256=$(sha256sum "${WCP_FILE}" | awk '{print $1}')
+          mkdir -p release
+          find artifacts -name "*.wcp" -exec cp {} release/ \;
+          find artifacts -name "*.wcp.xz" -exec cp {} release/ \;
+          ls -lah release/
 
-          # Build release notes via heredoc to avoid indentation issues
-          gh release create "${RELEASE_TAG}" \
-            --repo "${{ github.repository }}" \
-            --title "Wine ${WINE_VERSION} (${WINE_SOURCE})" \
-            --notes "$(cat <<EOF
-          ## Wine ${WINE_VERSION} WCP for Winlator/GameNative
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.check.outputs.release_tag }}
+          name: "Wine WCP ${{ env.PROTON_VERSION }} (${{ needs.check.outputs.release_tag }})"
+          files: release/*
+          draft: false
+          prerelease: false
+          body: |
+            ## Wine WCP for GameNative / Winlator
 
-          **Source:** \`${WINE_SOURCE}\`
-          **Commit/Version:** \`${COMMIT_SHA}\`
-          **SHA256:** \`${SHA256}\`
+            Based on [GameNative/proton-wine](https://github.com/GameNative/proton-wine) (Proton ${{ env.PROTON_VERSION }})
 
-          ### Contents
-          - Wine PE DLLs (64-bit: \`lib/wine/x86_64-windows/\`, 32-bit: \`lib/wine/i386-windows/\`)
-          - Wine executables (\`bin/\`)
-          - Compatible with **Winlator Bionic** and **GameNative**
+            **Source commit:** `${{ needs.check.outputs.wine_sha }}`
 
-          ### How to install
-          Download the \`.wcp\` and install via GameNative / Winlator WCP manager.
+            ### WCP Files
+            **Wine type (GameNative):**
+            - `wine-${{ env.PROTON_VERSION }}-x86_64.wcp` - x86_64 (Box64 containers)
+            - `wine-${{ env.PROTON_VERSION }}-arm64ec.wcp` - ARM64EC (FEX containers)
 
-          > Built automatically by [wine-wcp-builder](https://github.com/${{ github.repository }})
-          EOF
-          )" \
-            "${WCP_FILE}"
+            **Wine type (Winlator CMOD / Ludashi):**
+            - `wine-${{ env.PROTON_VERSION }}-x86_64.wcp.xz`
+            - `wine-${{ env.PROTON_VERSION }}-arm64ec.wcp.xz`
 
-          echo "### Released: ${WCP_NAME}" >> "$GITHUB_STEP_SUMMARY"
-          echo "SHA256: \`${SHA256}\`"     >> "$GITHUB_STEP_SUMMARY"
+            ### How to install
+            Download the `.wcp` and install via the app's WCP manager.
+
+            > Built automatically by [wine-wcp-builder](https://github.com/${{ github.repository }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
