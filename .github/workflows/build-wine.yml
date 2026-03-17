@@ -75,13 +75,13 @@ jobs:
             RELEASE_TAG="wine-winlator-${VERSION}"
           else
             # ── Upstream Wine stable ───────────────────────────────────────
-            # Stable tags look like "wine-X.0" (major releases only)
+            # Stable tags: wine-X.0, wine-X.0.Y (point releases)
             if [ -z "${WINE_VERSION_INPUT}" ]; then
               VERSION=$(curl -fsSL \
-                "https://api.github.com/repos/wine-mirror/wine/tags" \
+                "https://api.github.com/repos/wine-mirror/wine/tags?per_page=100" \
                 -H "Authorization: Bearer ${GH_TOKEN}" \
                 | jq -r '[.[] | .name
-                          | select(test("^wine-[0-9]+\\.0$"))]
+                          | select(test("^wine-[0-9]+\\.0(\\.[0-9]+)?$"))]
                          | first
                          | ltrimstr("wine-")')
             else
@@ -193,31 +193,28 @@ jobs:
           WCP_NAME=$(basename "${WCP_FILE}")
           SHA256=$(sha256sum "${WCP_FILE}" | awk '{print $1}')
 
-          # Build release notes
-          BODY="## Wine ${WINE_VERSION} WCP for Winlator/GameNative
+          # Build release notes via heredoc to avoid indentation issues
+          gh release create "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --title "Wine ${WINE_VERSION} (${WINE_SOURCE})" \
+            --notes "$(cat <<EOF
+          ## Wine ${WINE_VERSION} WCP for Winlator/GameNative
 
           **Source:** \`${WINE_SOURCE}\`
           **Commit/Version:** \`${COMMIT_SHA}\`
           **SHA256:** \`${SHA256}\`
 
           ### Contents
-          - Windows PE DLLs (64-bit: \`system32/\`, 32-bit: \`syswow64/\`)
+          - Wine PE DLLs (64-bit: \`lib/wine/x86_64-windows/\`, 32-bit: \`lib/wine/i386-windows/\`)
+          - Wine executables (\`bin/\`)
           - Compatible with **Winlator Bionic** and **GameNative**
 
           ### How to install
-          Add the WCP URL to your GameNative / Winlator WCP source, or download and
-          install manually from the app's WCP manager.
-
-          ### profile.json type
-          \`wine\`
+          Download the \`.wcp\` and install via GameNative / Winlator WCP manager.
 
           > Built automatically by [wine-wcp-builder](https://github.com/${{ github.repository }})
-          "
-
-          gh release create "${RELEASE_TAG}" \
-            --repo "${{ github.repository }}" \
-            --title "Wine ${WINE_VERSION} (${WINE_SOURCE})" \
-            --notes "${BODY}" \
+          EOF
+          )" \
             "${WCP_FILE}"
 
           echo "### Released: ${WCP_NAME}" >> "$GITHUB_STEP_SUMMARY"

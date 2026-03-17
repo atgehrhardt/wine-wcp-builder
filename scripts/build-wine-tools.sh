@@ -47,13 +47,14 @@ make -C "${TOOLS_BUILD}" -j"${JOBS}" \
   tools/wmc/wmc \
   tools/sfnt2fon/sfnt2fon \
   tools/wine \
-  2>&1 | grep -E "^(Making|Error|error:|warning:|wine)" || true
+  2>&1 | tail -20
 
-# install is needed so the tools are in a predictable location
-make -C "${TOOLS_BUILD}" -j"${JOBS}" install-lib 2>/dev/null || true
+# --with-wine-tools expects the build directory itself (not an install prefix)
+# The PE cross-compile step uses this path to find wrc, widl, etc.
+echo "==> Native tools built at: ${TOOLS_BUILD}"
+ls "${TOOLS_BUILD}/tools/wrc/wrc" \
+   "${TOOLS_BUILD}/tools/widl/widl" \
+   "${TOOLS_BUILD}/tools/winebuild/winebuild" 2>/dev/null
 
-echo "==> Native tools built: ${TOOLS_INSTALL}/bin"
-ls "${TOOLS_INSTALL}/bin/"
-
-# Export for subsequent steps
-echo "WINE_TOOLS_DIR=${TOOLS_INSTALL}" >> "${GITHUB_ENV:-/dev/null}"
+# Export the build directory as WINE_TOOLS_DIR
+echo "WINE_TOOLS_DIR=${TOOLS_BUILD}" >> "${GITHUB_ENV:-/dev/null}"

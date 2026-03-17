@@ -6,8 +6,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
 
+# Core build tools + cross-compilation + Wine build requirements + utilities
 apt-get install -y --no-install-recommends \
-  # Core build tools
   build-essential \
   autoconf \
   automake \
@@ -16,12 +16,10 @@ apt-get install -y --no-install-recommends \
   bison \
   flex \
   gettext \
-  # Cross-compilation (MinGW via system, overridden by LLVM-MinGW)
   gcc-mingw-w64-x86-64 \
   gcc-mingw-w64-i686 \
   binutils-mingw-w64-x86-64 \
   binutils-mingw-w64-i686 \
-  # Wine build requirements
   libgnutls28-dev \
   libfreetype-dev \
   libfontconfig-dev \
@@ -45,7 +43,6 @@ apt-get install -y --no-install-recommends \
   libpcap-dev \
   ocl-icd-opencl-dev \
   libpulse-dev \
-  # Script utilities
   jq \
   curl \
   wget \
@@ -54,7 +51,6 @@ apt-get install -y --no-install-recommends \
   git \
   python3 \
   python3-pip \
-  # Shader compilation (for Wine's built-in shaders)
   glslang-tools \
   spirv-tools
 

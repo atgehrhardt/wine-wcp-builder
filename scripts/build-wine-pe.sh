@@ -9,7 +9,7 @@ ARCH="${1:?Usage: build-wine-pe.sh <x86_64|i686>}"
 
 WORK_DIR="${GITHUB_WORKSPACE:-$(pwd)}/build"
 WINE_SRC="${WORK_DIR}/wine-src"
-TOOLS_DIR="${WINE_TOOLS_DIR:-${WORK_DIR}/wine-tools}"
+TOOLS_DIR="${WINE_TOOLS_DIR:-${WORK_DIR}/wine-tools-build}"
 BUILD_DIR="${WORK_DIR}/wine-pe-${ARCH}-build"
 INSTALL_DIR="${WORK_DIR}/wine-pe-${ARCH}"
 JOBS="${JOBS:-$(nproc)}"
@@ -32,9 +32,10 @@ esac
 
 export PATH="/opt/llvm-mingw/bin:${PATH}"
 
-# Verify toolchain
-if ! command -v "${MINGW_TRIPLE}-gcc" &>/dev/null; then
-  echo "ERROR: ${MINGW_TRIPLE}-gcc not found. Run setup-llvm-mingw.sh first." >&2
+# Verify toolchain (llvm-mingw provides clang wrappers as *-gcc)
+if ! command -v "${MINGW_TRIPLE}-clang" &>/dev/null && \
+   ! command -v "${MINGW_TRIPLE}-gcc" &>/dev/null; then
+  echo "ERROR: ${MINGW_TRIPLE} toolchain not found. Run setup-llvm-mingw.sh first." >&2
   exit 1
 fi
 
@@ -70,24 +71,13 @@ cd "${BUILD_DIR}"
   \
   --disable-tests \
   --disable-mscoree \
-  CROSSCC="${MINGW_TRIPLE}-gcc" \
-  CROSSCXX="${MINGW_TRIPLE}-g++" \
-  CROSSAR="${MINGW_TRIPLE}-ar" \
-  CROSSRANLIB="${MINGW_TRIPLE}-ranlib" \
-  CROSSSTRIP="${MINGW_TRIPLE}-strip" \
   2>&1 | tail -10
 
 echo "==> Building Wine PE DLLs (${JOBS} jobs)..."
-make -C "${BUILD_DIR}" -j"${JOBS}" \
-  2>&1 | grep -E "^(Making|Error|error:)" || true
+make -C "${BUILD_DIR}" -j"${JOBS}" 2>&1 | tail -20
 
 echo "==> Installing Wine PE DLLs to ${INSTALL_DIR}..."
 make -C "${BUILD_DIR}" -j"${JOBS}" install
-
-# Strip debug symbols from DLLs to reduce WCP size
-echo "==> Stripping DLLs..."
-find "${INSTALL_DIR}" -name "*.dll" -o -name "*.exe" -o -name "*.so" \
-  | xargs -P"${JOBS}" -I{} "${MINGW_TRIPLE}-strip" --strip-unneeded {} 2>/dev/null || true
 
 echo "==> Wine PE (${ARCH}) built."
 echo "    DLL count: $(find "${INSTALL_DIR}" -name "*.dll" | wc -l)"

@@ -18,10 +18,16 @@ mkdir -p "${CACHE_DIR}"
 apply_patch() {
   local PATCH_FILE="$1"
   local STRIP="${2:-1}"
+
+  # Skip placeholder patches (no diff hunks)
+  if ! grep -q '^@@' "${PATCH_FILE}" 2>/dev/null; then
+    echo "  [SKIP] $(basename "${PATCH_FILE}") – no diff hunks (placeholder)"
+    return 0
+  fi
+
   echo "  Applying: $(basename "${PATCH_FILE}")"
   patch -d "${WINE_SRC}" -p"${STRIP}" --forward --batch \
     < "${PATCH_FILE}" || {
-    # Some patches may already be applied (idempotent)
     echo "  [WARN] Patch may already be applied or had conflicts – continuing."
   }
 }

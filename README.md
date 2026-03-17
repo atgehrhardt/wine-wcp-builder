@@ -1,18 +1,20 @@
 # wine-wcp-builder
 
 Automated GitHub Actions pipeline that builds the latest stable [Wine](https://www.winehq.org/)
-as a **WCP (Windows Compatibility Package)** compatible with
+as a **WCP** compatible with
 [GameNative](https://github.com/utkarshdalal/GameNative) and
 [Winlator Bionic](https://github.com/brunodev85/winlator).
 
 ## What is a WCP?
 
-A WCP is a `zstd`-compressed tar archive containing:
+A WCP (Winlator Content Package) is a `zstd`-compressed GNU tar archive containing:
 
 ```
-profile.json      ← metadata (type, version, file mappings)
-system32/         ← 64-bit Windows PE DLLs
-syswow64/         ← 32-bit Windows PE DLLs (WoW64)
+profile.json                  ← metadata (type: "Wine", version, file mappings)
+bin/                          ← Wine executables
+lib/wine/x86_64-windows/     ← 64-bit Windows PE DLLs
+lib/wine/i386-windows/       ← 32-bit Windows PE DLLs (WoW64)
+share/wine/                   ← NLS files, fonts
 ```
 
 The WCP is loaded by Winlator / GameNative to replace or extend the bundled Wine DLLs.
@@ -32,7 +34,7 @@ The WCP is loaded by Winlator / GameNative to replace or extend the bundled Wine
 
 ### `upstream` (default)
 
-Tracks [wine-mirror/wine](https://github.com/wine-mirror/wine) stable tags (`wine-X.0`).
+Tracks [wine-mirror/wine](https://github.com/wine-mirror/wine) stable tags (`wine-X.0`, `wine-X.0.Y`).
 [Wine Staging](https://github.com/wine-staging/wine-staging) patches are applied automatically.
 Local patches from `patches/` are applied on top.
 
@@ -88,14 +90,6 @@ patches/
   001-winlator-paths.patch ← Winlator rootfs path adjustments
                              (generate with scripts/generate-patches.sh)
 ```
-
-## Adding the WCP to GameNative / Winlator
-
-1. Download the `.wcp` from the latest [release](../../releases).
-2. Open **GameNative → Settings → WCP Manager → Add from file**.
-3. Select the downloaded `.wcp`.
-4. Restart the container.
-
 ## Credits
 
 - [Wine Project](https://www.winehq.org/) – Windows compatibility layer
