@@ -1,0 +1,21 @@
+Description: Adjust Wine DLL search paths for Winlator/GameNative rootfs layout.
+             Winlator mounts its Wine rootfs at a non-standard location, so Wine's
+             built-in path resolution needs to be aware of it.
+Author: Derived from brunodev85/wine-9.2-custom
+Origin: https://github.com/brunodev85/wine-9.2-custom
+
+NOTE: This patch file is intentionally left as a template/placeholder.
+      The actual patch content should be extracted by diffing
+      brunodev85/wine-9.2-custom against its base Wine version:
+
+        git clone https://github.com/brunodev85/wine-9.2-custom winlator-wine
+        git clone https://gitlab.winehq.org/wine/wine.git upstream-wine
+        cd upstream-wine
+        git diff wine-9.2 ../winlator-wine > ../patches/001-winlator-paths.patch
+
+      This is done automatically by the CI if PATCH_SOURCE=winlator is set
+      in build-wine.yml. For manual builds, generate the patch file yourself
+      using the commands above before running build-wine.sh.
+
+To regenerate patches automatically from the Winlator fork:
+  scripts/generate-patches.sh winlator

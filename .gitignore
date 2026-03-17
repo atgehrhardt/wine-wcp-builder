@@ -1,0 +1,10 @@
+build/
+output/
+*.wcp
+*.tar.xz
+*.tar.gz
+*.tar.zst
+*.log
+.DS_Store
+__pycache__/
+*.pyc

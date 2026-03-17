@@ -1,0 +1,224 @@
+name: Build Wine WCP
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # Check daily at 6 AM UTC
+  workflow_dispatch:
+    inputs:
+      wine_source:
+        description: 'Source: "upstream" (latest stable wine.org) or "winlator" (brunodev85 fork)'
+        required: false
+        default: 'upstream'
+        type: choice
+        options:
+          - upstream
+          - winlator
+      wine_version:
+        description: 'Specific version to build (e.g., "10.0"). Leave blank for latest.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # needed to create releases
+
+env:
+  # Winlator-compatible Wine fork
+  WINLATOR_WINE_REPO: brunodev85/wine-9.2-custom
+  # LLVM-MinGW version (same pin as WinlatorWCPHub to avoid toolchain drift)
+  LLVM_MINGW_VERSION: '20251104'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. Determine which version to build and whether we already have it
+  # ─────────────────────────────────────────────────────────────────────────
+  check-version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version:      ${{ steps.resolve.outputs.version }}
+      source:       ${{ steps.resolve.outputs.source }}
+      commit_sha:   ${{ steps.resolve.outputs.commit_sha }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      release_tag:  ${{ steps.resolve.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version to build
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WINE_SOURCE: ${{ github.event.inputs.wine_source || 'upstream' }}
+          WINE_VERSION_INPUT: ${{ github.event.inputs.wine_version || '' }}
+        run: |
+          set -euo pipefail
+
+          SOURCE="${WINE_SOURCE}"
+          echo "source=${SOURCE}" >> "$GITHUB_OUTPUT"
+
+          if [ "${SOURCE}" = "winlator" ]; then
+            # ── Winlator fork ──────────────────────────────────────────────
+            LATEST_TAG=$(curl -fsSL \
+              "https://api.github.com/repos/${WINLATOR_WINE_REPO}/tags" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              | jq -r 'first(.[] | .name)' )
+
+            if [ -z "${WINE_VERSION_INPUT}" ]; then
+              VERSION="${LATEST_TAG}"
+            else
+              VERSION="${WINE_VERSION_INPUT}"
+            fi
+
+            COMMIT_SHA=$(curl -fsSL \
+              "https://api.github.com/repos/${WINLATOR_WINE_REPO}/commits/${VERSION}" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              | jq -r '.sha[:8]' 2>/dev/null || echo "unknown")
+
+            RELEASE_TAG="wine-winlator-${VERSION}"
+          else
+            # ── Upstream Wine stable ───────────────────────────────────────
+            # Stable tags look like "wine-X.0" (major releases only)
+            if [ -z "${WINE_VERSION_INPUT}" ]; then
+              VERSION=$(curl -fsSL \
+                "https://api.github.com/repos/wine-mirror/wine/tags" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                | jq -r '[.[] | .name
+                          | select(test("^wine-[0-9]+\\.0$"))]
+                         | first
+                         | ltrimstr("wine-")')
+            else
+              VERSION="${WINE_VERSION_INPUT}"
+            fi
+
+            COMMIT_SHA="stable"
+            RELEASE_TAG="wine-${VERSION}"
+          fi
+
+          echo "version=${VERSION}"       >> "$GITHUB_OUTPUT"
+          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
+          # Skip if the release already exists (for scheduled runs)
+          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" \
+               > /dev/null 2>&1; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Release ${RELEASE_TAG} already exists – skipping build."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Will build release: ${RELEASE_TAG}"
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. Build Wine PE DLLs and package as WCP
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180   # Wine builds can take 2-3 h on GitHub runners
+
+    env:
+      WINE_VERSION:  ${{ needs.check-version.outputs.version }}
+      WINE_SOURCE:   ${{ needs.check-version.outputs.source }}
+      COMMIT_SHA:    ${{ needs.check-version.outputs.commit_sha }}
+      RELEASE_TAG:   ${{ needs.check-version.outputs.release_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Restore build cache (native tools + downloaded tarballs) ──────────
+      - name: Restore cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/wine-build
+            /opt/llvm-mingw
+          key: wine-build-${{ runner.os }}-${{ env.WINE_SOURCE }}-${{ env.WINE_VERSION }}-${{ env.LLVM_MINGW_VERSION }}
+          restore-keys: |
+            wine-build-${{ runner.os }}-${{ env.WINE_SOURCE }}-${{ env.WINE_VERSION }}-
+
+      # ── System dependencies ────────────────────────────────────────────────
+      - name: Install build dependencies
+        run: |
+          sudo bash scripts/setup-deps.sh
+
+      # ── LLVM-MinGW toolchain ───────────────────────────────────────────────
+      - name: Setup LLVM-MinGW
+        run: |
+          bash scripts/setup-llvm-mingw.sh "${LLVM_MINGW_VERSION}"
+
+      # ── Download Wine source ────────────────────────────────────────────────
+      - name: Download Wine source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/download-wine.sh "${WINE_SOURCE}" "${WINE_VERSION}"
+
+      # ── Apply patches ───────────────────────────────────────────────────────
+      - name: Apply patches
+        run: |
+          bash scripts/apply-patches.sh "${WINE_SOURCE}" "${WINE_VERSION}"
+
+      # ── Build native Wine tools (wrc, widl, winebuild – run on x86_64) ─────
+      - name: Build native Wine tools
+        run: |
+          bash scripts/build-wine-tools.sh
+
+      # ── Cross-compile Wine PE DLLs with MinGW ──────────────────────────────
+      - name: Build Wine PE DLLs (64-bit)
+        run: |
+          bash scripts/build-wine-pe.sh x86_64
+
+      - name: Build Wine PE DLLs (32-bit / WoW64)
+        run: |
+          bash scripts/build-wine-pe.sh i686
+
+      # ── Package as WCP ──────────────────────────────────────────────────────
+      - name: Package WCP
+        run: |
+          bash scripts/pack-wcp.sh "${WINE_VERSION}" "${WINE_SOURCE}" "${COMMIT_SHA}"
+
+      # ── Upload WCP artifact for inspection before release ──────────────────
+      - name: Upload WCP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-wcp-${{ env.RELEASE_TAG }}
+          path: output/*.wcp
+          retention-days: 7
+
+      # ── Publish GitHub Release ────────────────────────────────────────────
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          WCP_FILE=$(ls output/*.wcp | head -1)
+          WCP_NAME=$(basename "${WCP_FILE}")
+          SHA256=$(sha256sum "${WCP_FILE}" | awk '{print $1}')
+
+          # Build release notes
+          BODY="## Wine ${WINE_VERSION} WCP for Winlator/GameNative
+
+          **Source:** \`${WINE_SOURCE}\`
+          **Commit/Version:** \`${COMMIT_SHA}\`
+          **SHA256:** \`${SHA256}\`
+
+          ### Contents
+          - Windows PE DLLs (64-bit: \`system32/\`, 32-bit: \`syswow64/\`)
+          - Compatible with **Winlator Bionic** and **GameNative**
+
+          ### How to install
+          Add the WCP URL to your GameNative / Winlator WCP source, or download and
+          install manually from the app's WCP manager.
+
+          ### profile.json type
+          \`wine\`
+
+          > Built automatically by [wine-wcp-builder](https://github.com/${{ github.repository }})
+          "
+
+          gh release create "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --title "Wine ${WINE_VERSION} (${WINE_SOURCE})" \
+            --notes "${BODY}" \
+            "${WCP_FILE}"
+
+          echo "### Released: ${WCP_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "SHA256: \`${SHA256}\`"     >> "$GITHUB_STEP_SUMMARY"
