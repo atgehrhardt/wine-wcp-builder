@@ -5,8 +5,8 @@ on:
     - cron: '0 6 * * *'   # Check daily at 6 AM UTC
   workflow_dispatch:
     inputs:
-      wine_tag:
-        description: 'Wine version tag (e.g., "wine-11.0"). Leave blank to auto-detect latest stable.'
+      wine_branch:
+        description: 'Wine branch (e.g., "wine-11.3"). Leave blank to auto-detect latest.'
         required: false
         default: ''
       arch:
@@ -23,11 +23,8 @@ permissions:
   contents: write
 
 env:
-  # Upstream Wine source
-  WINE_REPO: wine-mirror/wine
-  # GameNative repo for Android patches and support files
-  GAMENATIVE_REPO: GameNative/proton-wine
-  GAMENATIVE_BRANCH: proton_10.0
+  # GameNative's upstream Wine fork (with Android/Bionic patches)
+  WINE_REPO: GameNative/wine
   # Toolchain versions
   NDK_VERSION: '27.3.13750724'
   LLVM_MINGW_VERSION: '20250920'
@@ -47,7 +44,7 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       wine_sha: ${{ steps.check.outputs.wine_sha }}
-      wine_tag: ${{ steps.check.outputs.wine_tag }}
+      wine_branch: ${{ steps.check.outputs.wine_branch }}
       wine_version: ${{ steps.check.outputs.wine_version }}
       release_tag: ${{ steps.check.outputs.release_tag }}
     steps:
@@ -60,28 +57,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -n "${{ github.event.inputs.wine_tag || '' }}" ]; then
-            # Manual input
-            WINE_TAG="${{ github.event.inputs.wine_tag }}"
+          if [ -n "${{ github.event.inputs.wine_branch || '' }}" ]; then
+            WINE_BRANCH="${{ github.event.inputs.wine_branch }}"
           else
-            # Auto-detect latest stable release (wine-X.0 pattern)
-            WINE_TAG=$(gh api "repos/${WINE_REPO}/git/refs/tags" --paginate \
-              --jq '.[].ref' \
-              | grep -E 'refs/tags/wine-[0-9]+\.0$' \
-              | sed 's|refs/tags/||' \
-              | sort -t- -k2 -V \
-              | tail -1)
-            echo "Auto-detected latest stable: ${WINE_TAG}"
+            # Auto-detect: use the default branch of GameNative/wine
+            WINE_BRANCH=$(gh api "repos/${WINE_REPO}" --jq '.default_branch')
+            echo "Auto-detected default branch: ${WINE_BRANCH}"
           fi
 
-          # Extract version number (e.g., "11.0" from "wine-11.0")
-          WINE_VERSION="${WINE_TAG#wine-}"
+          # Extract version number (e.g., "11.3" from "wine-11.3")
+          WINE_VERSION="${WINE_BRANCH#wine-}"
 
-          WINE_SHA=$(gh api "repos/${WINE_REPO}/commits/${WINE_TAG}" --jq '.sha[:8]')
+          WINE_SHA=$(gh api "repos/${WINE_REPO}/commits/${WINE_BRANCH}" --jq '.sha[:8]')
           DATE=$(date +%Y%m%d)
           RELEASE_TAG="wine-${WINE_VERSION}-build-${DATE}-${WINE_SHA}"
 
-          echo "wine_tag=${WINE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "wine_branch=${WINE_BRANCH}" >> "$GITHUB_OUTPUT"
           echo "wine_version=${WINE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "wine_sha=${WINE_SHA}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
@@ -91,7 +82,7 @@ jobs:
             echo "Release ${RELEASE_TAG} already exists – skipping."
           else
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "Will build: Wine ${WINE_VERSION} (${WINE_TAG}, sha ${WINE_SHA})"
+            echo "Will build: Wine ${WINE_VERSION} (branch ${WINE_BRANCH}, sha ${WINE_SHA})"
           fi
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -109,7 +100,7 @@ jobs:
 
     env:
       WINE_SHA: ${{ needs.check.outputs.wine_sha }}
-      WINE_TAG: ${{ needs.check.outputs.wine_tag }}
+      WINE_BRANCH: ${{ needs.check.outputs.wine_branch }}
       WINE_VERSION: ${{ needs.check.outputs.wine_version }}
       RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
 
@@ -124,19 +115,11 @@ jobs:
       - name: Install build dependencies
         run: sudo bash scripts/setup-deps.sh
 
-      # ── Clone upstream Wine source ──────────────────────────────────────
-      - name: Clone upstream Wine
+      # ── Clone Wine source ──────────────────────────────────────────────
+      - name: Clone Wine
         run: |
-          git clone --depth=1 --branch "${WINE_TAG}" \
+          git clone --depth=1 --branch "${WINE_BRANCH}" \
             "https://github.com/${WINE_REPO}.git" wine-src
-
-      # ── Clone GameNative for Android patches ────────────────────────────
-      - name: Clone GameNative patches
-        run: |
-          git clone --depth=1 --branch "${GAMENATIVE_BRANCH}" \
-            "https://github.com/${GAMENATIVE_REPO}.git" gamenative-src
-          # Copy Android patches and support files into Wine source tree
-          cp -r gamenative-src/android wine-src/android
 
       # ── Termux sysroot ──────────────────────────────────────────────────
       - name: Download termuxfs
@@ -180,22 +163,16 @@ jobs:
           tar -xf "llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"
 
       # ── Build Wine ──────────────────────────────────────────────────────
-      - name: Run autoreconf
+      - name: Run autogen
         working-directory: wine-src
-        run: |
-          # Upstream Wine uses autoreconf instead of autogen.sh
-          if [ -f autogen.sh ]; then
-            bash autogen.sh
-          else
-            autoreconf -fi
-          fi
+        run: bash autogen.sh
 
       - name: Cache wine-tools
         id: cache-wine-tools
         uses: actions/cache@v4
         with:
           path: wine-src/wine-tools
-          key: wine-tools-${{ needs.check.outputs.wine_tag }}-${{ hashFiles('wine-src/configure.ac', 'wine-src/configure') }}
+          key: wine-tools-${{ needs.check.outputs.wine_branch }}-${{ hashFiles('wine-src/configure.ac', 'wine-src/configure') }}
 
       - name: Build wine-tools
         if: steps.cache-wine-tools.outputs.cache-hit != 'true'
@@ -209,27 +186,22 @@ jobs:
         if: matrix.arch == 'aarch64'
         working-directory: wine-src
         run: |
-          bash "${{ github.workspace }}/scripts/build-wine.sh" "${{ matrix.arch }}" --build-sysvshm
-
-      - name: Apply Android patches
-        working-directory: wine-src
-        run: |
-          bash "${{ github.workspace }}/scripts/build-wine.sh" "${{ matrix.arch }}" --apply-patches
+          bash build-scripts/build-step-arm64ec.sh --build-sysvshm
 
       - name: Configure Wine
         working-directory: wine-src
         run: |
-          bash "${{ github.workspace }}/scripts/build-wine.sh" "${{ matrix.arch }}" --configure
+          bash build-scripts/build-step-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.sh --configure
 
       - name: Build Wine
         working-directory: wine-src
         run: |
-          bash "${{ github.workspace }}/scripts/build-wine.sh" "${{ matrix.arch }}" --build
+          bash build-scripts/build-step-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.sh --build
 
       - name: Install Wine
         working-directory: wine-src
         run: |
-          bash "${{ github.workspace }}/scripts/build-wine.sh" "${{ matrix.arch }}" --install
+          bash build-scripts/build-step-${{ matrix.arch == 'aarch64' && 'arm64ec' || 'x86_64' }}.sh --install
 
       # ── Package WCP ─────────────────────────────────────────────────────
       - name: Download prefixPack
@@ -286,10 +258,11 @@ jobs:
           body: |
             ## Wine WCP for GameNative / Winlator
 
-            Based on upstream [Wine](https://www.winehq.org/) ${{ needs.check.outputs.wine_version }} (`${{ needs.check.outputs.wine_tag }}`)
-            with Android/Bionic patches from [GameNative/proton-wine](https://github.com/GameNative/proton-wine)
+            Based on [GameNative/wine](https://github.com/GameNative/wine) Wine ${{ needs.check.outputs.wine_version }}
+            (upstream Wine with Android/Bionic patches)
 
             **Source commit:** `${{ needs.check.outputs.wine_sha }}`
+            **Branch:** `${{ needs.check.outputs.wine_branch }}`
 
             ### WCP Files
             **Wine type (GameNative):**
@@ -302,11 +275,6 @@ jobs:
 
             ### How to install
             Download the `.wcp` and install via the app's WCP manager.
-
-            ### Patch compatibility
-            Android patches from GameNative/proton-wine are applied on a best-effort basis.
-            Some patches may not apply cleanly to newer upstream Wine versions.
-            Check the build logs for details.
 
             > Built automatically by [wine-wcp-builder](https://github.com/${{ github.repository }})
         env:
