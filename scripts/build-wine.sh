@@ -256,7 +256,7 @@ for arg in "$@"; do
       if git apply --check "$PATCH_FILE" 2>/dev/null; then
         git apply "$PATCH_FILE"
         echo "    OK: $patch"
-        ((APPLIED++))
+        APPLIED=$((APPLIED + 1))
       else
         echo "    FAIL: $patch"
         FAILED_PATCHES+=("$patch")
